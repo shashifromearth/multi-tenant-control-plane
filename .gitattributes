@@ -1,0 +1,3 @@
+# Force LF so shell scripts and Makefiles work in Linux containers even on Windows checkouts
+* text=auto eol=lf
+*.png binary

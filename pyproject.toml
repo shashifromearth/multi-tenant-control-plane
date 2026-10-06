@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tenant-control-plane"
+version = "1.0.0"
+description = "Multi-tenant SaaS provisioning control plane with a worker simulator"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# Runtime dependencies are pinned in requirements.txt (the image installs from there).
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",   # pycodestyle / pyflakes
+    "I",             # isort
+    "B",             # bugbear
+    "UP",            # pyupgrade
+    "S",             # bandit-style security rules
+    "C4",            # comprehensions
+    "SIM",           # simplify
+    "RUF",           # ruff-specific
+    "N",             # naming
+    "T20",           # no stray print()
+    "PT",            # pytest style
+]
+ignore = [
+    "B008",          # FastAPI's Depends()/Query() in defaults is idiomatic
+    "N818",          # exception names mirror the public error codes (TenantNotFound, ...)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S311", "S105", "S106"]
+"scripts/**" = ["T20", "S311"]
+"src/worker/**" = ["S311"]   # random is used for simulation, not crypto
+
+[tool.ruff.lint.isort]
+known-first-party = ["control_plane", "worker", "contracts"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+packages = ["control_plane", "worker", "contracts"]
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["pika.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: needs PostgreSQL",
+    "messaging: needs RabbitMQ",
+]
+filterwarnings = ["error::DeprecationWarning:control_plane.*"]
+
+# ---------------------------------------------------------------- coverage
+[tool.coverage.run]
+source = ["control_plane", "worker", "contracts"]
+branch = true
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",
+]
+
+# ---------------------------------------------------------------- bandit
+[tool.bandit]
+exclude_dirs = ["tests", "scripts"]
