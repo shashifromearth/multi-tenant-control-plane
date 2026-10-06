@@ -1,0 +1,126 @@
+# Boot everything:            docker compose up --build
+# Change worker behaviour:    WORKER_FAIL_RATE=1 docker compose up -d worker
+#
+# Credentials below are throw-away defaults for a local, non-exposed developer stack
+# (override them via environment / .env). Nothing secret lives in this repository.
+
+x-control-plane: &control-plane
+  build:
+    context: .
+    target: runtime
+  image: tenant-control-plane:local
+  restart: unless-stopped
+  environment: &cp-env
+    DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-controlplane}:${POSTGRES_PASSWORD:-controlplane}@postgres:5432/${POSTGRES_DB:-controlplane}
+    AMQP_URL: amqp://${RABBITMQ_USER:-controlplane}:${RABBITMQ_PASSWORD:-controlplane}@rabbitmq:5672/%2F
+    BROKER_PREFIX: cp
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    TZ: UTC
+  depends_on:
+    postgres:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
+x-heartbeat-check: &heartbeat-check
+  # The loop touches /tmp/heartbeat every few seconds; stale => unhealthy.
+  test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(time.time()-os.path.getmtime('/tmp/heartbeat')>30)"]
+  interval: 10s
+  timeout: 3s
+  retries: 3
+  start_period: 15s
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-controlplane}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-controlplane}
+      POSTGRES_DB: ${POSTGRES_DB:-controlplane}
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-controlplane}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-controlplane}
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"   # management UI / HTTP API (used by scripts/)
+    volumes: [rabbitmqdata:/var/lib/rabbitmq]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  migrate:
+    <<: *control-plane
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *control-plane
+    command: ["control_plane", "api", "--port", "8000"]
+    ports: ["127.0.0.1:8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(urllib.request.urlopen('http://localhost:8000/health/live').status!=200)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  outbox-relay:
+    <<: *control-plane
+    command: ["control_plane", "relay"]
+    healthcheck: *heartbeat-check
+
+  consumer:
+    <<: *control-plane
+    command: ["control_plane", "consumer"]
+    healthcheck: *heartbeat-check
+
+  worker:
+    <<: *control-plane
+    command: ["worker"]
+    environment:
+      <<: *cp-env
+      WORKER_FAIL_RATE: ${WORKER_FAIL_RATE:-0}
+      WORKER_MIN_DELAY_MS: ${WORKER_MIN_DELAY_MS:-500}
+      WORKER_MAX_DELAY_MS: ${WORKER_MAX_DELAY_MS:-2000}
+      WORKER_DUPLICATE_RATE: ${WORKER_DUPLICATE_RATE:-0}
+      WORKER_OUT_OF_ORDER_RATE: ${WORKER_OUT_OF_ORDER_RATE:-0}
+
+  # Quality gates + full test suite, run in a container against the same Postgres and
+  # RabbitMQ (isolated test database and broker prefix). `make test` / `make check`.
+  tests:
+    build:
+      context: .
+      target: dev
+    image: tenant-control-plane:dev
+    profiles: ["test"]
+    environment:
+      TEST_DATABASE_ADMIN_URL: postgresql+psycopg://${POSTGRES_USER:-controlplane}:${POSTGRES_PASSWORD:-controlplane}@postgres:5432/postgres
+      TEST_AMQP_URL: amqp://${RABBITMQ_USER:-controlplane}:${RABBITMQ_PASSWORD:-controlplane}@rabbitmq:5672/%2F
+      TEST_REQUIRE_SERVICES: "1"   # fail (never skip) if Postgres/RabbitMQ are missing
+      TZ: UTC
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  rabbitmqdata:
