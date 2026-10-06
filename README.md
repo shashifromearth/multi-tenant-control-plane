@@ -97,41 +97,34 @@ curl -s "localhost:8000/tasks?tenant_id=<tenant-id>"  # deploy task: "status":"d
 ### 2.1 Runtime view
 
 ```mermaid
-flowchart LR
+flowchart TB
     client([HTTP client])
-
-    subgraph cp[Control plane: one image, three processes]
-        api[api<br/>FastAPI]
-        relay[outbox-relay]
-        consumer[consumer]
-    end
-
-    subgraph pg[(PostgreSQL)]
-        tenants[(tenants)]
-        tasks[(tasks)]
-        outbox[(outbox_messages)]
-        inbox[(processed_events)]
-    end
-
-    subgraph mq[RabbitMQ]
-        tx{{cp.tasks<br/>topic}}
-        wq[[cp.worker.tasks]]
-        px{{cp.task-progress<br/>topic}}
-        pq[[cp.control-plane.task-progress]]
-        rq[[...retry.1000/5000/30000ms]]
-        dlq[[...dlq]]
-    end
-
+    api["api (FastAPI)"]
+    relay[outbox-relay]
+    consumer[consumer]
+    db[("PostgreSQL<br/>tenants, tasks,<br/>outbox_messages, processed_events")]
     worker[worker simulator]
 
-    client -- REST --> api
-    api -- "1 tx: tenant + task + outbox row" --> pg
-    relay -- "poll committed rows<br/>FOR UPDATE SKIP LOCKED" --> outbox
-    relay -- "publish + confirm" --> tx --> wq --> worker
-    worker -- "in_progress / done / failed" --> px --> pq --> consumer
-    consumer -- "1 tx: inbox + task + tenant" --> pg
-    consumer -. transient error .-> rq -. TTL .-> pq
-    consumer -. poison .-> dlq
+    subgraph mq[RabbitMQ]
+        tx{{cp.tasks exchange}}
+        wq[[cp.worker.tasks]]
+        px{{cp.task-progress exchange}}
+        pq[[cp.control-plane.task-progress]]
+        rq[[retry queues 1s / 5s / 30s]]
+        dlq[[dead-letter queue]]
+    end
+
+    client -->|REST| api
+    api -->|"1 tx: tenant + task + outbox row"| db
+    db -->|"committed outbox rows"| relay
+    relay -->|"publish + confirm"| tx
+    tx --> wq --> worker
+    worker -->|"in_progress / done / failed"| px
+    px --> pq --> consumer
+    consumer -->|"1 tx: inbox + task + tenant"| db
+    consumer -.->|transient error| rq
+    rq -.->|TTL expiry| pq
+    consumer -.->|poison| dlq
 ```
 
 | Process | Role | Scales |
