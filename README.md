@@ -14,8 +14,8 @@ commands below are identical in Windows Command Prompt, PowerShell, macOS Termin
 shells; nothing needs to be installed locally (no Python, no `make`).
 
 ```bash
-git clone <this-repo>
-cd <this-repo>
+git clone <https://github.com/shashifromearth/multi-tenant-control-plane.git>
+cd <multi-tenant-control-plane>
 
 # boot everything (API, outbox relay, consumer, worker, PostgreSQL, RabbitMQ)
 docker compose up --build
